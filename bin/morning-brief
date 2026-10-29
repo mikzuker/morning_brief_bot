@@ -93,18 +93,17 @@ def brief_dir(cfg):
 
 
 # ---------------------------------------------------------------------------------------------
-def write_brief(cfg, project, force=False, day=None):
+def write_brief(cfg, project, force=False):
     """Collect context, run Claude Code headless, save the brief. Returns (path, session_id)."""
     bdir = brief_dir(cfg)
     today = f"{dt.date.today():%Y-%m-%d}"
-    out = bdir / slug(project["name"]) / (f"{today}_for-{day}.md" if day else f"{today}.md")
+    out = bdir / slug(project["name"]) / f"{today}.md"
     if out.exists() and not force:
         return out, None  # cached: no re-exploring
     out.parent.mkdir(parents=True, exist_ok=True)
 
     manifest = bdir / "logs" / f"manifest-{slug(project['name'])}.json"
-    cmd = ([sys.executable, str(COLLECT), "--project", project["name"], "--manifest", str(manifest)]
-           + (["--day", day] if day else []))
+    cmd = [sys.executable, str(COLLECT), "--project", project["name"], "--manifest", str(manifest)]
     bundle = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
     if bundle.returncode != 0:
         raise RuntimeError(f"collector failed: {bundle.stderr.strip()[-500:]}")
@@ -128,9 +127,8 @@ def write_brief(cfg, project, force=False, day=None):
     sid = res.get("session_id")
     text = res["result"].strip()
     out.write_text(text + f"\n\n<!-- claude session: {sid} -->\n")
-    if not day:
-        remember(out, text, manifest)
-        save_carryover(out, text)
+    remember(out, text, manifest)
+    save_carryover(out, text)
     return out, sid
 
 
@@ -200,14 +198,28 @@ def session_from(path):
     return m.group(1) if m and m.group(1) != "None" else None
 
 
-def run_projects(cfg, projects, force=False, day=None, quiet=False, mode=None):
+def show_cached(cfg, projects, day, mode=None):
+    """Show the brief written on `day` from the cache. Never writes a new one."""
+    for p in projects:
+        pdir = brief_dir(cfg) / slug(p["name"])
+        f = pdir / f"{day:%Y-%m-%d}.md"
+        if f.exists():
+            print(f"{p['name']}: brief of {day:%A %d %B} → {f}")
+            show(cfg, f, session_from(f), mode)
+            continue
+        cached = sorted(x.stem for x in pdir.glob("????-??-??.md")) if pdir.is_dir() else []
+        print(f"{p['name']}: no brief from {day:%A %d %B %Y} in the cache. Briefs are kept for "
+              f"{cfg.get('keep_days', DEFAULT_KEEP_DAYS)} days; cached now: {', '.join(cached) or 'none'}.")
+
+
+def run_projects(cfg, projects, force=False, quiet=False, mode=None):
     ok = 0
     for p in projects:
         t0 = time.time()
         if not quiet:
             print(f"Morning brief for {p['name']} … ", end="", flush=True)
         try:
-            path, sid = write_brief(cfg, p, force=force, day=day)
+            path, sid = write_brief(cfg, p, force=force)
         except Exception as e:  # report, continue with the next project
             msg = f"{p['name']}: {e}"
             (brief_dir(cfg) / "logs" / f"{dt.date.today()}.log").open("a").write(msg + "\n")
@@ -286,7 +298,6 @@ def main():
                     help="write today's brief again (re-explores everything)")
     ap.add_argument("--print", dest="print_", action="store_true", help="print the brief instead of opening it")
     ap.add_argument("--yesterday", action="store_true", help="show yesterday's brief from the cache")
-    ap.add_argument("--day", help="cover a specific working day, YYYY-MM-DD")
     ap.add_argument("--setup", action="store_true")
     ap.add_argument("--list", action="store_true")
     ap.add_argument("--install-trigger", action="store_true")
@@ -323,16 +334,8 @@ def main():
             sys.exit(f"No project '{a.project}'. See `morning-brief --list`.")
     mode = "print" if a.print_ else None
     if a.yesterday:
-        y = f"{dt.date.today() - dt.timedelta(days=1):%Y-%m-%d}.md"
-        for p in projects:
-            f = brief_dir(cfg) / slug(p["name"]) / y
-            if f.exists():
-                print(f"{p['name']}: yesterday's brief → {f}")
-                show(cfg, f, session_from(f), mode)
-            else:
-                print(f"{p['name']}: no brief from yesterday in the cache.")
-        return
-    run_projects(cfg, projects, force=a.force, day=a.day, mode=mode)
+        return show_cached(cfg, projects, dt.date.today() - dt.timedelta(days=1), mode)
+    run_projects(cfg, projects, force=a.force, mode=mode)
 
 
 if __name__ == "__main__":
