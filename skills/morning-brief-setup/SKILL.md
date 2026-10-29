@@ -90,6 +90,7 @@ Show the final config as a short readable summary (not raw JSON), ask "Save this
   "show": "file",
   "model": "sonnet",
   "brief_dir": "~/MorningBrief",
+  "keep_days": 2,
   "projects": [
     {
       "name": "My research project",
