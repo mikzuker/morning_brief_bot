@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "read_chats": true,
+  "trigger": "auto",
+  "auto_after": "07:00",
+  "auto_until": "14:00",
+  "show": "file",
+  "model": "sonnet",
+  "brief_dir": "~/MorningBrief",
+  "projects": [
+    {
+      "name": "My research project",
+      "auto": true,
+      "log_file": "PROGRESS.md",
+      "folders": [
+        {"path": "~/Research/my_project", "role": "code"},
+        {"path": "~/Research", "role": "slides", "pattern": "Meeting*.key", "recursive": false},
+        {"path": "~/Research/papers", "role": "papers"}
+      ]
+    },
+    {
+      "name": "Side project",
+      "auto": false,
+      "folders": [
+        {"path": "~/code/side-project", "role": "code"}
+      ]
+    }
+  ]
+}

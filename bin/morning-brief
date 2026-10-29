@@ -1,0 +1,272 @@
+#!/usr/bin/env python3
+"""morning-brief: write your morning brief with Claude Code.
+
+    morning-brief                  briefs for all projects (shows today's if already written)
+    morning-brief <project>        one project's brief
+    morning-brief --force          write again even if today's brief exists
+    morning-brief --setup          first-time setup, or change projects/folders/start method
+    morning-brief --list           list configured projects
+    morning-brief --install-trigger / --remove-trigger    automatic start on/off
+    morning-brief --auto           what the macOS login/wake job runs (once a day, in the time window)
+"""
+
+import argparse
+import datetime as dt
+import json
+import os
+import plistlib
+import re
+import shlex
+import shutil
+import socket
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+REPO = Path(__file__).resolve().parent.parent
+COLLECT = REPO / "skills" / "morning-brief" / "scripts" / "collect.py"
+CONFIG = Path.home() / ".config" / "morning-brief" / "config.json"
+LABEL = "local.morning-brief"
+PLIST = Path.home() / "Library" / "LaunchAgents" / f"{LABEL}.plist"
+CLAUDE_CANDIDATES = ["~/.local/bin/claude", "~/.claude/local/claude", "/opt/homebrew/bin/claude",
+                     "/usr/local/bin/claude", "~/.npm-global/bin/claude"]
+
+
+def find_claude():
+    found = shutil.which("claude")
+    if found:
+        return found
+    for c in CLAUDE_CANDIDATES:
+        p = Path(c).expanduser()
+        if p.is_file() and os.access(p, os.X_OK):
+            return str(p)
+    sys.exit("Claude Code (`claude`) not found. Install it first: https://docs.claude.com/en/docs/claude-code")
+
+
+def load_config():
+    try:
+        return json.loads(CONFIG.read_text())
+    except (OSError, ValueError):
+        return None
+
+
+def slug(name):
+    return re.sub(r"[^A-Za-z0-9_-]+", "-", name).strip("-").lower() or "project"
+
+
+def notify(text, title="Morning brief"):
+    script = f'display notification "{applescript(text)}" with title "{applescript(title)}"'
+    subprocess.run(["osascript", "-e", script], capture_output=True)
+
+
+def applescript(s):
+    return s.replace("\\", "\\\\").replace('"', '\\"')
+
+
+def wait_for_network(seconds=120):
+    deadline = time.time() + seconds
+    while time.time() < deadline:
+        try:
+            socket.create_connection(("api.anthropic.com", 443), timeout=5).close()
+            return True
+        except OSError:
+            time.sleep(5)
+    return False
+
+
+def brief_dir(cfg):
+    d = Path(cfg.get("brief_dir", "~/MorningBrief")).expanduser()
+    (d / "logs").mkdir(parents=True, exist_ok=True)
+    return d
+
+
+# ---------------------------------------------------------------------------------------------
+def write_brief(cfg, project, force=False, day=None):
+    """Collect context, run Claude Code headless, save the brief. Returns (path, session_id)."""
+    bdir = brief_dir(cfg)
+    out = bdir / slug(project["name"]) / f"{dt.date.today():%Y-%m-%d}.md"
+    if out.exists() and not force and not day:
+        return out, None
+    out.parent.mkdir(parents=True, exist_ok=True)
+
+    manifest = bdir / "logs" / f"manifest-{slug(project['name'])}.json"
+    cmd = ([sys.executable, str(COLLECT), "--project", project["name"], "--manifest", str(manifest)]
+           + (["--day", day] if day else []))
+    bundle = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+    if bundle.returncode != 0:
+        raise RuntimeError(f"collector failed: {bundle.stderr.strip()[-500:]}")
+
+    folders = [str(Path(f["path"]).expanduser()) for f in project.get("folders", [])
+               if Path(f["path"]).expanduser().is_dir()]
+    claude = find_claude()
+    prompt = (f'Use the morning-brief skill to write the morning brief for the project '
+              f'"{project["name"]}". The context bundle is below (from stdin).')
+    tools = ["Read", "Glob", "Grep", f"Bash({sys.executable} {COLLECT}:*)", f"Bash(python3 {COLLECT}:*)"]
+    run = subprocess.run(
+        [claude, "-p", prompt, "--output-format", "json", "--model", cfg.get("model", "sonnet"),
+         "--allowedTools", *tools, "--add-dir", *folders],
+        input=bundle.stdout, capture_output=True, text=True, cwd=bdir, timeout=900)
+    try:
+        res = json.loads(run.stdout)
+    except ValueError:
+        raise RuntimeError(f"Claude Code failed: {(run.stderr or run.stdout).strip()[-500:]}")
+    if res.get("is_error") or not res.get("result"):
+        raise RuntimeError(f"Claude Code error: {str(res.get('result') or res)[:500]}")
+    sid = res.get("session_id")
+    out.write_text(res["result"].strip() + f"\n\n<!-- claude session: {sid} -->\n")
+    remember(out, manifest)
+    return out, sid
+
+
+def remember(brief, manifest):
+    """Record which file versions this brief summarized, so they are never read again."""
+    seen_path = brief.parent / ".seen.json"
+    try:
+        seen = json.loads(seen_path.read_text())
+    except (OSError, ValueError):
+        seen = {}
+    try:
+        for e in json.loads(manifest.read_text()):
+            seen[e["path"]] = {"mtime": e["mtime"], "size": e["size"], "brief": brief.name}
+    except (OSError, ValueError):
+        return
+    seen_path.write_text(json.dumps(seen, indent=1))
+
+
+def show(cfg, path, sid):
+    if cfg.get("show") == "terminal":
+        inner = f"cd {shlex.quote(str(path.parent.parent))} && cat {shlex.quote(str(path))}"
+        if sid:
+            inner += f" && {shlex.quote(find_claude())} --resume {shlex.quote(sid)}"
+        subprocess.run(["osascript", "-e", f'tell application "Terminal" to do script "{applescript(inner)}"',
+                        "-e", 'tell application "Terminal" to activate'], capture_output=True)
+    else:
+        subprocess.run(["open", str(path)])
+
+
+def session_from(path):
+    m = re.search(r"<!-- claude session: (\S+) -->", path.read_text(errors="ignore"))
+    return m.group(1) if m and m.group(1) != "None" else None
+
+
+def run_projects(cfg, projects, force=False, day=None, quiet=False):
+    ok = 0
+    for p in projects:
+        t0 = time.time()
+        if not quiet:
+            print(f"Morning brief for {p['name']} … ", end="", flush=True)
+        try:
+            path, sid = write_brief(cfg, p, force=force, day=day)
+        except Exception as e:  # report, continue with the next project
+            msg = f"{p['name']}: {e}"
+            (brief_dir(cfg) / "logs" / f"{dt.date.today()}.log").open("a").write(msg + "\n")
+            print(f"failed.\n  {e}") if not quiet else notify(f"Brief failed for {p['name']}. "
+                                                               f"Run `morning-brief` in Terminal to see why.")
+            continue
+        ok += 1
+        if not quiet:
+            print(f"done ({time.time() - t0:.0f}s) → {path}")
+        show(cfg, path, sid or session_from(path))
+    if quiet and ok:
+        notify(f"{ok} brief(s) ready.")
+    return ok
+
+
+# ---------------------------------------------------------------------------------------------
+def install_trigger(cfg):
+    hh, mm = (int(x) for x in cfg.get("auto_after", "07:00").split(":"))
+    bdir = brief_dir(cfg)
+    claude_dir = str(Path(find_claude()).parent)
+    plist = {
+        "Label": LABEL,
+        "ProgramArguments": [sys.executable, str(Path(__file__).resolve()), "--auto"],
+        "RunAtLoad": True,                                  # at login, after a shutdown
+        "StartCalendarInterval": {"Hour": hh, "Minute": mm},  # if asleep then: runs on wake
+        "StandardOutPath": str(bdir / "logs" / "launchd.log"),
+        "StandardErrorPath": str(bdir / "logs" / "launchd.log"),
+        "EnvironmentVariables": {"PATH": f"{claude_dir}:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
+                                 "HOME": str(Path.home())},
+    }
+    PLIST.parent.mkdir(parents=True, exist_ok=True)
+    with PLIST.open("wb") as f:
+        plistlib.dump(plist, f)
+    (bdir / ".last_auto").write_text(dt.date.today().isoformat())  # don't fire right now on load
+    uid = os.getuid()
+    subprocess.run(["launchctl", "bootout", f"gui/{uid}", str(PLIST)], capture_output=True)
+    r = subprocess.run(["launchctl", "bootstrap", f"gui/{uid}", str(PLIST)], capture_output=True, text=True)
+    if r.returncode != 0:
+        sys.exit(f"Could not register the login job: {r.stderr.strip()}")
+    print(f"Automatic brief on: first time you use your Mac after {hh:02d}:{mm:02d}, "
+          f"until {cfg.get('auto_until', '14:00')}, once a day. Starts tomorrow.")
+
+
+def remove_trigger():
+    subprocess.run(["launchctl", "bootout", f"gui/{os.getuid()}", str(PLIST)], capture_output=True)
+    if PLIST.exists():
+        PLIST.unlink()
+    print("Automatic brief off. Run `morning-brief` whenever you want one.")
+
+
+def auto(cfg):
+    if cfg.get("trigger") != "auto":
+        return
+    now = dt.datetime.now()
+    after = dt.time.fromisoformat(cfg.get("auto_after", "07:00"))
+    until = dt.time.fromisoformat(cfg.get("auto_until", "14:00"))
+    if not (after <= now.time() <= until):
+        return
+    stamp = brief_dir(cfg) / ".last_auto"
+    if stamp.exists() and stamp.read_text().strip() == now.date().isoformat():
+        return
+    stamp.write_text(now.date().isoformat())  # first, so a second trigger can't start a duplicate run
+    if not wait_for_network():
+        notify("No internet, so no brief this morning. Run `morning-brief` later.")
+        return
+    projects = [p for p in cfg.get("projects", []) if p.get("auto", True)]
+    run_projects(cfg, projects, quiet=True)
+
+
+def main():
+    ap = argparse.ArgumentParser(description="Write your morning brief with Claude Code.")
+    ap.add_argument("project", nargs="?", help="one project (default: all)")
+    ap.add_argument("--force", action="store_true", help="write again even if today's brief exists")
+    ap.add_argument("--day", help="cover a specific working day, YYYY-MM-DD")
+    ap.add_argument("--setup", action="store_true")
+    ap.add_argument("--list", action="store_true")
+    ap.add_argument("--install-trigger", action="store_true")
+    ap.add_argument("--remove-trigger", action="store_true")
+    ap.add_argument("--auto", action="store_true", help=argparse.SUPPRESS)
+    a = ap.parse_args()
+
+    cfg = load_config()
+    if a.setup or (cfg is None and not a.auto):
+        claude = find_claude()
+        print("Starting setup in Claude Code …")
+        os.chdir(Path.home())
+        os.execv(claude, [claude, "Use the morning-brief-setup skill to set up my morning brief "
+                                  "(or change it, if a config already exists)."])
+    if cfg is None:
+        return
+    if a.auto:
+        return auto(cfg)
+    if a.install_trigger:
+        return install_trigger(cfg)
+    if a.remove_trigger:
+        return remove_trigger()
+    projects = cfg.get("projects", [])
+    if a.list:
+        for p in projects:
+            print(f"{p['name']}{'' if p.get('auto', True) else '  (on demand only)'}")
+            for f in p.get("folders", []):
+                print(f"    {f.get('role', 'other'):8} {f['path']}" + (f"  [{f['pattern']}]" if f.get("pattern") else ""))
+        return
+    if a.project:
+        projects = [p for p in projects if p["name"].lower() == a.project.lower() or slug(p["name"]) == slug(a.project)]
+        if not projects:
+            sys.exit(f"No project '{a.project}'. See `morning-brief --list`.")
+    run_projects(cfg, projects, force=a.force, day=a.day)
+
+
+if __name__ == "__main__":
+    main()
