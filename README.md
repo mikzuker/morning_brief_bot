@@ -38,7 +38,6 @@ a short setup chat where Claude asks:
 | `morning-brief --print`             | Print the brief in Terminal instead of opening it          |
 | `morning-brief --yesterday`         | Yesterday's brief, from the cache                          |
 | `morning-brief --refresh`           | Write today's brief again (re-explores everything)         |
-| `morning-brief --day 2026-10-27`    | Brief for a specific working day                           |
 | `morning-brief --setup`             | Change projects, folders or the start method               |
 | `morning-brief --list`              | Show configured projects                                   |
 
