@@ -627,12 +627,28 @@ def clip_block(text, cap):
 DOC_EXT = {".pdf", ".key", ".pptx", ".docx", ".ipynb", ".md", ".txt", ".tex", ".csv", ".tsv"}
 
 
-class Memory:
-    """Which files earlier briefs already covered.
+def brief_excerpt(brief_text, file_name, cap=700):
+    """Lines of a brief that talk about a file (by name, or by stem if it is distinctive)."""
+    stem = Path(file_name).stem
+    keys = {file_name.lower()} | ({stem.lower()} if len(stem) >= 6 else set())
+    lines = brief_text.splitlines()
+    hits = []
+    for i, line in enumerate(lines):
+        if any(k in line.lower() for k in keys):
+            hits.append(line.strip())
+            if i + 1 < len(lines) and lines[i + 1].startswith((" ", "\t")):
+                hits.append(lines[i + 1].strip())
+    return clip_block("\n".join(dict.fromkeys(hits)), cap)
 
-    `.seen.json` in the project's brief folder maps a file path to the mtime/size it had when its
-    content went into a brief, and that brief's name. The launcher updates it after each successful
-    brief from the manifest this script writes (only files whose content was actually included)."""
+
+class Memory:
+    """What earlier briefs already said about files, so unchanged files are never read twice.
+
+    Full briefs are only a short-lived cache (deleted after `keep_days`). What lasts is
+    `.seen.json` in the project's brief folder: for every file whose content went into a brief it
+    keeps the file's mtime/size at that time, the brief's date, and the lines that brief wrote about
+    it (`summary`). The launcher fills it after each successful brief, from the manifest this script
+    writes (only files whose content was actually included)."""
 
     def __init__(self, pdir, today_iso):
         self.pdir, self.today = pdir, today_iso
@@ -644,44 +660,37 @@ class Memory:
         self.included = []
 
     def summarized_in(self, p):
-        """The brief that summarized this exact version of the file, if any."""
+        """(date, summary) for this exact version of the file, if a brief before today covered it."""
         e = self.seen.get(str(p.resolve()))
-        if not e or e.get("brief", "").startswith(self.today):
+        if not e:
             return None
+        date = e.get("date") or e.get("brief", "")[:10]
+        if date == self.today:
+            return None  # today's brief is being rewritten
         try:
             st = p.stat()
         except OSError:
             return None
-        b = self.pdir / e["brief"]
-        if abs(e["mtime"] - st.st_mtime) < 2 and e["size"] == st.st_size and b.exists():
-            return b
-        return None
+        if abs(e["mtime"] - st.st_mtime) >= 2 or e["size"] != st.st_size:
+            return None  # edited since
+        summary = e.get("summary")
+        if summary is None and (self.pdir / e.get("brief", "-")).is_file():  # entries from before v2
+            summary = brief_excerpt((self.pdir / e["brief"]).read_text(errors="replace"), p.name)
+        return date, summary or ""
 
     def brief_after_edit(self, p):
-        """The first brief after the file's last edit that mentions it (covers files from before
-        the index existed)."""
+        """For files the index doesn't know: the first cached brief after the file's last edit
+        that mentions it."""
         edited = workday(dt.datetime.fromtimestamp(p.stat().st_mtime)).isoformat()
         for b in [b for b in self.briefs if b.stem > edited][:5]:
-            if self.excerpt(b, p):
-                return b
+            ex = brief_excerpt(b.read_text(errors="replace"), p.name)
+            if ex:
+                return b.stem, ex
         return None
 
-    @staticmethod
-    def excerpt(brief, p, cap=700):
-        keys = {p.name.lower()} | ({p.stem.lower()} if len(p.stem) >= 6 else set())
-        lines = brief.read_text(errors="replace").splitlines()
-        hits = []
-        for i, line in enumerate(lines):
-            if any(k in line.lower() for k in keys):
-                hits.append(line.strip())
-                if i + 1 < len(lines) and lines[i + 1].startswith((" ", "\t")):
-                    hits.append(lines[i + 1].strip())
-        return clip_block("\n".join(dict.fromkeys(hits)), cap)
-
     def recall(self, p):
-        """(brief, excerpt) from earlier briefs for an unchanged file, or (None, '')."""
-        b = self.summarized_in(p) or self.brief_after_edit(p)
-        return (b, self.excerpt(b, p)) if b else (None, "")
+        """(date, summary) from earlier briefs for an unchanged file, or (None, '')."""
+        return self.summarized_in(p) or self.brief_after_edit(p) or (None, "")
 
     def include(self, p, cap, role):
         """Read the file's content for this bundle and remember it for the manifest."""
@@ -697,12 +706,12 @@ class Memory:
 
 
 def recalled_text(mem, p, why):
-    b, ex = mem.recall(p)
+    date, ex = mem.recall(p)
     edited = fmt_time(p.stat().st_mtime)
-    if b:
-        return (f"Unchanged since {edited}; not re-read. From brief {b.name}:\n{ex}" if ex else
-                f"Unchanged since {edited}; not re-read. Brief {b.name} had its content but did not mention it "
-                f"(judged unimportant then).")
+    if date:
+        return (f"Unchanged since {edited}; not re-read. From the brief of {date}:\n{ex}" if ex else
+                f"Unchanged since {edited}; not re-read. The brief of {date} had its content but did not "
+                f"mention it (judged unimportant then).")
     return (f"Unchanged since {edited}; not re-read, and no earlier brief covers it. {why}")
 
 
@@ -828,8 +837,9 @@ def other_folder_block(f, since, exclude, mem):
         cap = (ARTICLE_CHARS if ext == ".pdf" and role == "papers" else
                DECK_CHARS if ext in {".key", ".pptx"} or (ext == ".pdf" and role == "slides") else SNIPPET_CHARS)
         print(f"\n> {p.relative_to(folder)}  ({fmt_time(t)}, path: {p})")
-        b = mem.summarized_in(p)  # e.g. copied or re-saved without changes
-        print(f"Already summarized in brief {b.name}; unchanged, not re-read." if b else mem.include(p, cap, role))
+        known = mem.summarized_in(p)  # e.g. copied or re-saved without changes
+        print(f"Already covered by the brief of {known[0]}; unchanged, not re-read.\n{known[1]}".strip()
+              if known else mem.include(p, cap, role))
     if len(new) > MAX_FILES_PER_FOLDER:
         print(f"\n… and {len(new) - MAX_FILES_PER_FOLDER} more: " +
               ", ".join(p.name for _, p in new[MAX_FILES_PER_FOLDER:MAX_FILES_PER_FOLDER + 20]))
@@ -913,8 +923,9 @@ def main():
     # window for files/git: the chat day, or since the previous brief, or since yesterday morning
     if chat_day:
         since = day_start(chat_day)
-    elif previous:
-        since = dt.datetime.fromtimestamp(previous[-1].stat().st_mtime)
+    elif previous or (pdir / ".carryover.md").is_file():
+        last = previous[-1] if previous else pdir / ".carryover.md"
+        since = dt.datetime.fromtimestamp(last.stat().st_mtime)
     else:
         since = day_start(today - dt.timedelta(days=1))
     since = max(since, now - dt.timedelta(days=MAX_LOOKBACK_DAYS))
@@ -929,8 +940,12 @@ def main():
           if read_chats else "Chat reading is switched off in the config.")
     print(f"Files and git covered since: {since:%A %Y-%m-%d %H:%M}")
 
+    carryover = pdir / ".carryover.md"
     if previous:
         section(f"PREVIOUS BRIEF ({previous[-1].name})", previous[-1].read_text(errors="replace")[:3000])
+    elif carryover.is_file():
+        section("PREVIOUS BRIEF (only its key parts are kept after the cache expires)",
+                carryover.read_text(errors="replace")[:2500])
     else:
         section("PREVIOUS BRIEF", "First run: no previous brief.")
 
@@ -953,7 +968,8 @@ def main():
                     continue
                 if k in ("prompt", "bash", "edit", "read"):
                     mentioned.append((x[0] if k == "prompt" else x).lower())
-        since_prev = workday(dt.datetime.fromtimestamp(previous[-1].stat().st_mtime)) if previous else None
+        last = previous[-1] if previous else (carryover if carryover.is_file() else None)
+        since_prev = workday(dt.datetime.fromtimestamp(last.stat().st_mtime)) if last else None
         others = [d for d in sorted(per_day) if d != chat_day and d < today and (since_prev is None or d >= since_prev)]
         if others:
             section("OTHER DAYS WITH CHATS SINCE THE LAST BRIEF",

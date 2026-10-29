@@ -10,12 +10,12 @@ your folders is changed.
 
 - macOS with the command line tools (`xcode-select --install`)
 - [Claude Code](https://docs.claude.com/en/docs/claude-code), installed and logged in (run `claude` once).
-  The Claude desktop app is not needed.
+The Claude desktop app is not needed.
 
 ## Install
 
 ```bash
-git clone https://github.com/<lab>/morning-brief ~/.morning-brief
+git clone https://github.com/mikzuker/morning-brief.git ~/.morning-brief
 ~/.morning-brief/install.sh
 ```
 
@@ -25,21 +25,29 @@ a short setup chat where Claude asks:
 1. whether it may read your Claude Code chats,
 2. your projects, and for each one its folders (code, slides, papers, notes, results),
 3. whether the brief should start **automatically** (the first time you open your Mac after e.g.
+
    07:00, once a day) or **manually** (`morning-brief` in Terminal),
 4. whether to open the brief as a file or in Terminal with a follow-up chat.
 
 ## Use
 
-| Command | What it does |
-|---|---|
-| `morning-brief` | Briefs for all projects (shows today's if already written) |
-| `morning-brief "My research project"` | One project |
-| `morning-brief --force` | Write today's brief again |
-| `morning-brief --day 2026-10-27` | Brief for a specific working day |
-| `morning-brief --setup` | Change projects, folders or the start method |
-| `morning-brief --list` | Show configured projects |
+| Command                             | What it does                                               |
+| ----------------------------------- | ---------------------------------------------------------- |
+| `morning-brief`                     | Briefs for all projects (shows today's if already written) |
+| `morning-brief "<My_Project_Name>"` | One project                                                |
+| `morning-brief --print`             | Print the brief in Terminal instead of opening it          |
+| `morning-brief --yesterday`         | Yesterday's brief, from the cache                          |
+| `morning-brief --refresh`           | Write today's brief again (re-explores everything)         |
+| `morning-brief --day 2026-10-27`    | Brief for a specific working day                           |
+| `morning-brief --setup`             | Change projects, folders or the start method               |
+| `morning-brief --list`              | Show configured projects                                   |
 
-Briefs are saved in `~/MorningBrief/<project>/YYYY-MM-DD.md`; logs in `~/MorningBrief/logs/`.
+Briefs are cached in `~/MorningBrief/<project>/YYYY-MM-DD.md` for two days: calling `morning-brief`  
+again during the day shows the cached brief instantly, without exploring project folders and chats again. On the third day the brief is deleted  
+(change with `keep_days` in the config). Two small files outlive the cache: `.seen.json` (what
+earlier briefs said about each file, so unchanged files are never read again) and `.carryover.md`
+(the last brief's top 3 and open threads, so the next brief can check what got done, e.g. after a
+weekend).
 
 ## Update / uninstall
 
@@ -51,19 +59,18 @@ cd ~/.morning-brief && git pull      # update
 ## Good to know
 
 - **Cost:** each brief is one Claude Code run on your plan (default model: Sonnet; change `model`
-  in `~/.config/morning-brief/config.json`).
+in `~/.config/morning-brief/config.json`).
 - **Folders in Documents, Desktop or iCloud:** the first automatic run may trigger a macOS prompt
-  ("python3 would like to access…"). Allow it once, or the brief will skip those folders.
-- **Privacy:** chats and files are read on your Mac and sent only to Claude, as in any Claude Code
-  session. Briefs stay in `~/MorningBrief`.
+("python3 would like to access…"). Allow it once, or the brief will skip those folders.
+- **Brief place:** Briefs stay in `~/MorningBrief`.
 - **Each file is read once:** a file's content goes into the brief only when it is new or was edited.
-  Later, if a chat mentions it again, the brief reuses what an earlier brief said about it
-  (tracked in `~/MorningBrief/<project>/.seen.json`).
+Later, if a chat mentions it again, the brief reuses what an earlier brief said about it
+(kept in `~/MorningBrief/<project>/.seen.json`, which outlives the two-day brief cache).
 - **Articles (PDF):** text is read with macOS's built-in PDF engine (no install needed); for each new
-  paper the brief gets the title, abstract and conclusions. Scanned PDFs without a text layer are
-  listed by name only.
+paper the brief gets the title, abstract and conclusions. Scanned PDFs without a text layer are
+listed by name only.
 - **Keynote decks:** text is extracted on a best-effort basis; if a deck shows up empty, the brief
-  uses its name and date only.
+uses its name and date only.
 
 ## Files
 

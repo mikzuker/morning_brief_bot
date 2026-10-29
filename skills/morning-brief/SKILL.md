@@ -35,12 +35,17 @@ folders explain and verify what was discussed in the chats, and add what happene
 
 1. **Context bundle (preferred).** The launcher pipes it into the prompt. It starts with
    `=== MORNING-BRIEF CONTEXT ===` and names the project and its folders with their roles.
-2. **No bundle (interactive use).** Run
+2. **Today's brief already exists (interactive use).** Briefs are cached for two days in
+   `~/MorningBrief/<project-slug>/YYYY-MM-DD.md` (today's and yesterday's). If the user asks for
+   their brief, or a question it answers ("what was I doing yesterday?", "what should I start
+   with?"), and today's file exists, answer from it. Don't collect or explore again unless the user
+   asks to refresh it (`morning-brief --refresh`).
+3. **No bundle and no cached brief (interactive use).** Run
    `python3 <this skill's folder>/scripts/collect.py --project "<name>"` for a configured project,
    or with no arguments to cover every repo that yesterday's chats were in.
-3. **Drill-down.** `python3 <this skill's folder>/scripts/collect.py --session <chat id>` prints one
+4. **Drill-down.** `python3 <this skill's folder>/scripts/collect.py --session <chat id>` prints one
    chat in full. Use it when a chat's purpose or outcome is unclear from its summary.
-4. **File check.** `python3 <this skill's folder>/scripts/collect.py --project "<name>" --file-info <path>`
+5. **File check.** `python3 <this skill's folder>/scripts/collect.py --project "<name>" --file-info <path>`
    prints when a file was last edited and what an earlier brief said about it. Run it before opening
    any file yourself.
 
@@ -49,7 +54,7 @@ The bundle, in order:
 | Part | Contents |
 |---|---|
 | Header | Project name, its folders and their roles, the chat day covered, the period for files |
-| `PREVIOUS BRIEF` | The last brief for this project: was its top suggestion done? |
+| `PREVIOUS BRIEF` | The last brief for this project (or, once it has left the two-day cache, its kept parts: where you left off, top 3, open threads, flags): was its top suggestion done? |
 | `CHATS ON <day>` | Every chat of the working day (it ends at 04:00): time span, title, every user prompt with its time (`[+image]` = the user pasted a picture, usually a plot), files Claude edited or read, commands run, Claude's last reply |
 | `OTHER DAYS WITH CHATS` | Other active days since the last brief |
 | `CODE FOLDER` | Head of `CLAUDE.md`/`README.md`, git log and status, the progress log *if one exists*, failing tests, files changed since the start of the chat day (tagged `[edited in chat]` / `[outside chats]`) |

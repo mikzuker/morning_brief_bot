@@ -7,6 +7,7 @@
   "show": "file",
   "model": "sonnet",
   "brief_dir": "~/MorningBrief",
+  "keep_days": 2,
   "projects": [
     {
       "name": "My research project",
