@@ -15,7 +15,7 @@ The Claude desktop app is not needed.
 ## Install
 
 ```bash
-git clone https://github.com/mikzuker/morning-brief.git ~/.morning-brief
+git clone https://github.com/mikzuker/morning_brief_bot.git ~/.morning-brief
 ~/.morning-brief/install.sh
 ```
 
